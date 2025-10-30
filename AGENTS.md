@@ -1,0 +1,2 @@
+anyを積極的に使わないでください。
+unpluginのthis.parseで得られるnodeの型はAstNodeです。AstNodeはRollupより提供されるもので`RollupAstNode<TNode>`を使うことでestreeノードを変換できます。
