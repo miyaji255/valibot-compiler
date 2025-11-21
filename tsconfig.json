@@ -6,6 +6,7 @@
     "lib": ["ESNext"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    "composite": true,
     "skipLibCheck": true,
     "strict": true,
     "outDir": "dist",

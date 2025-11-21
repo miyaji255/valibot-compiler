@@ -1,5 +1,5 @@
 import * as v from "valibot";
-import { User } from "./User";
+import { User } from "./User.js";
 
 export const Blog = v.object({
   id: v.pipe(v.string(), v.nanoid()),

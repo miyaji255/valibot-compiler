@@ -1,0 +1,10 @@
+.vscode
+test
+*.test.ts
+*.tsbuildinfo
+vitest.config.*
+.serena
+AGENTS.md
+biome.json
+pnpm-workspace
+
