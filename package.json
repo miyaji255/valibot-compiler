@@ -14,14 +14,14 @@
   "devDependencies": {
     "@biomejs/biome": "^2.3.2",
     "@types/estree": "^1.0.5",
-    "@types/unist": "^3.0.3",
     "rollup": "^4.52.5",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "valibot": "^1.1.0"
   },
   "dependencies": {
     "estree-util-visit": "^2.0.0",
+    "hash-sum": "^2.0.0",
     "magic-string": "^0.30.21",
-    "unist-util-visit": "^5.0.0",
     "unplugin": "^2.3.10"
   }
 }

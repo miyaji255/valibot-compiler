@@ -3,14 +3,14 @@
     "target": "es2022",
     "module": "es2022",
     "moduleResolution": "Bundler",
+    "lib": ["ESNext"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "strict": true,
     "outDir": "dist",
-    "rootDir": "src",
     "resolveJsonModule": true,
     "declaration": true
   },
-  "include": ["src"]
+  "include": ["src", "rollup.ts"]
 }
