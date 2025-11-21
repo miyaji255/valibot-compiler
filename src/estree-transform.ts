@@ -535,106 +535,158 @@ export function transformWithEstree(
     return { code, changed: false, cacheEntries: [], map: null };
   }
 
-  const magic = new MagicString(code);
+  const valibotSymbols = new Set<string>([
+    ...imports.named.keys(),
+    ...imports.namespaces,
+  ]);
 
-  // valibotのシンボルを収集
-  const valibotSymbols = new Set<string>(imports.named.keys()).union(
-    imports.namespaces,
-  );
-
-  // スコープごとのシンボルを収集
-  const localSymbols: (Set<string> | null)[] = [];
-
+  // 重複宣言チェック
+  let hasCollision = false;
   visitEstree(ast, {
-    enter: (node, parent) => {
+    enter: (node) => {
       const rollupNode = node as AstNode;
-
       switch (rollupNode.type) {
-        case "Program": {
-          for (const bodyNode of rollupNode.body) {
-            switch (bodyNode.type) {
-              case "VariableDeclaration": {
-                const symbols = new Set<string>();
-                for (const decl of bodyNode.declarations)
-                  getSymbolsFromPattern(decl.id, symbols);
-                if (!valibotSymbols.isDisjointFrom(symbols))
-                  throw new Error("Redeclared imported symbol was found.");
-                break;
-              }
-              case "ExportNamedDeclaration": {
-                if (bodyNode.declaration) {
-                  const decl = bodyNode.declaration;
-                  if (decl.type === "VariableDeclaration") {
-                    const symbols = new Set<string>();
-                    for (const varDecl of decl.declarations)
-                      getSymbolsFromPattern(varDecl.id, symbols);
-                    if (!valibotSymbols.isDisjointFrom(symbols))
-                      throw new Error("Redeclared imported symbol was found.");
-                  } else {
-                    // FunctionDeclaration, ClassDeclaration
-                    const id = decl.id;
-                    if (valibotSymbols.has(id.name))
-                      throw new Error("Redeclared imported symbol was found.");
-                  }
-                }
-                break;
-              }
-              case "FunctionDeclaration":
-              case "ClassDeclaration":
-                if (valibotSymbols.has(bodyNode.id.name))
-                  throw new Error("Redeclared imported symbol was found.");
-                break;
+        case "VariableDeclarator": {
+          const names = new Set<string>();
+          getSymbolsFromPattern(rollupNode.id as RollupAstNode<Pattern>, names);
+          for (const name of names) {
+            if (valibotSymbols.has(name)) {
+              hasCollision = true;
+              return EXIT;
             }
           }
           break;
         }
-        case "ArrowFunctionExpression":
-        case "FunctionExpression":
-        case "FunctionDeclaration": {
-          const symbols = new Set<string>();
-          // parameters
-          for (const param of rollupNode.params)
-            getSymbolsFromPattern(param, symbols);
-
-          localSymbols.push(symbols);
+        case "FunctionDeclaration":
+        case "ClassDeclaration": {
+          const id = (rollupNode as { id: Identifier | null }).id;
+          if (id && valibotSymbols.has(id.name)) {
+            hasCollision = true;
+            return EXIT;
+          }
           break;
         }
-        case "StaticBlock":
-        case "BlockStatement": {
-          const symbols = new Set<string>();
-          collectDeclaredSymbolsFromStatements(rollupNode.body, symbols);
-          localSymbols.push(symbols);
+        case "FunctionExpression":
+        case "ArrowFunctionExpression": {
+          for (const param of rollupNode.params) {
+            const names = new Set<string>();
+            getSymbolsFromPattern(param, names);
+            for (const name of names) {
+              if (valibotSymbols.has(name)) {
+                hasCollision = true;
+                return EXIT;
+              }
+            }
+          }
           break;
         }
         case "CatchClause": {
-          // case "TryStatement":
-          const symbols = new Set<string>();
-          if (rollupNode.param)
-            getSymbolsFromPattern(rollupNode.param, symbols);
-          localSymbols.push(symbols);
-          break;
-        }
-        case "ForStatement": {
-          const symbols = new Set<string>();
-          if (rollupNode.init && rollupNode.init.type === "VariableDeclaration")
-            collectDeclaredSymbolsFromStatements([rollupNode.init], symbols);
+          const param = rollupNode.param;
+          if (param) {
+            const names = new Set<string>();
+            getSymbolsFromPattern(param, names);
+            for (const name of names) {
+              if (valibotSymbols.has(name)) {
+                hasCollision = true;
+                return EXIT;
+              }
+            }
+          }
           break;
         }
         case "ForInStatement":
         case "ForOfStatement": {
-          const symbols = new Set<string>();
-          if (rollupNode.left.type === "VariableDeclaration")
-            collectDeclaredSymbolsFromStatements([rollupNode.left], symbols);
-          localSymbols.push(symbols);
+          const left = rollupNode.left;
+          if (left && left.type !== "VariableDeclaration") {
+            const names = new Set<string>();
+            getSymbolsFromPattern(left as RollupAstNode<Pattern>, names);
+            for (const name of names) {
+              if (valibotSymbols.has(name)) {
+                hasCollision = true;
+                return EXIT;
+              }
+            }
+          }
           break;
         }
       }
-    },
-    leave: (node, parent) => {
-      if (node.type === "Program") return CONTINUE;
-      localSymbols.pop();
+      return CONTINUE;
     },
   });
+  if (hasCollision) {
+    return { code, changed: false, cacheEntries: [], map: null };
+  }
+
+  const magic = new MagicString(code);
+  const processed: ProcessedCallMap = new WeakMap();
+  const entriesByKey = new Map<string, CacheModuleEntry>();
+  const entriesOrdered: CacheModuleEntry[] = [];
+  const replacements: { start: number; end: number; identifier: string }[] = [];
+  const replacedNodes = new WeakSet<AstNode>();
+
+  const context: CallProcessingContext = {
+    magic,
+    imports,
+    processed,
+    entriesByKey,
+    entriesOrdered,
+  };
+
+  visitEstree(ast, {
+    enter: (node) => {
+      const rollupNode = node as AstNode;
+      if (isValibotCallExpression(rollupNode, imports)) {
+        const call = rollupNode as RollupAstNode<CallExpression>;
+        const entry = ensureCacheEntry(call, context);
+        if (entry && !replacedNodes.has(rollupNode)) {
+          const start = getStart(rollupNode);
+          const end = getEnd(rollupNode);
+          if (start !== null && end !== null) {
+            replacements.push({ start, end, identifier: entry.identifier });
+            replacedNodes.add(rollupNode);
+          }
+        }
+        return SKIP;
+      }
+      return CONTINUE;
+    },
+  });
+
+  if (entriesOrdered.length === 0 || replacements.length === 0) {
+    return { code, changed: false, cacheEntries: [], map: null };
+  }
+
+  // 置換を後ろから実施
+  replacements
+    .sort((a, b) => b.start - a.start)
+    .forEach((replacement) => {
+      magic.overwrite(
+        replacement.start,
+        replacement.end,
+        replacement.identifier,
+      );
+    });
+
+  const names = entriesOrdered.map((entry) => entry.identifier);
+  const cacheImportInfo = analyseCacheImport(ast, config.cacheModuleId);
+  if (cacheImportInfo) {
+    const importCode = renderCacheImport(
+      cacheImportInfo,
+      names,
+      config.cacheModuleId,
+    );
+    const start = getStart(cacheImportInfo.node as unknown as AstNode);
+    const end = getEnd(cacheImportInfo.node as unknown as AstNode);
+    if (start !== null && end !== null) {
+      magic.overwrite(start, end, importCode);
+    }
+  } else {
+    const importCode = renderNewCacheImport(names, config.cacheModuleId);
+    if (importCode.length > 0) {
+      const insertPos = findLastImportEnd(ast);
+      magic.appendLeft(insertPos, `${importCode}`);
+    }
+  }
 
   const map = magic.generateMap({
     hires: true,
@@ -644,7 +696,7 @@ export function transformWithEstree(
   return {
     code: magic.toString(),
     changed: true,
-    cacheEntries: null as any,
+    cacheEntries: entriesOrdered,
     map,
   };
 }

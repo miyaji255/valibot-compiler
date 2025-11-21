@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsc -w -p tsconfig.json"
+    "dev": "tsc -w -p tsconfig.json",
+    "test": "vitest run"
   },
   "keywords": [],
   "author": "",
@@ -14,9 +15,12 @@
   "devDependencies": {
     "@biomejs/biome": "^2.3.2",
     "@types/estree": "^1.0.5",
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.27.0",
     "rollup": "^4.52.5",
     "typescript": "^5.9.3",
-    "valibot": "^1.1.0"
+    "valibot": "^1.1.0",
+    "vitest": "^4.0.12"
   },
   "dependencies": {
     "estree-util-visit": "^2.0.0",
