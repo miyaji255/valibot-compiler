@@ -40,8 +40,12 @@ function build() {
     expect(stringEntry.callee).toBe("string");
     expect(numberEntry.callee).toBe("number");
 
-    const expectedImport = `import { ${stringEntry.identifier}, ${numberEntry.identifier} } from "${CACHE_ID}";`;
-    expect(result.code).toContain(expectedImport);
+    expect(result.code).toContain(
+      `import ${stringEntry.identifier} from "${CACHE_ID}/${stringEntry.identifier}";`,
+    );
+    expect(result.code).toContain(
+      `import ${numberEntry.identifier} from "${CACHE_ID}/${numberEntry.identifier}";`,
+    );
     expect(result.code).toContain(
       `const username = ${stringEntry.identifier};`,
     );
@@ -49,7 +53,9 @@ function build() {
     expect(result.map).not.toBeNull();
     expect(result.code).toMatchInlineSnapshot(`
       "
-      import { string, number } from "valibot";import { String__2db2ebb4, Number__c7ca7cc6 } from "valibot-compiler:cache";
+      import { string, number } from "valibot";
+      import String__2db2ebb4 from "valibot-compiler:cache/String__2db2ebb4";
+      import Number__c7ca7cc6 from "valibot-compiler:cache/Number__c7ca7cc6";
 
       const username = String__2db2ebb4;
       function build() {

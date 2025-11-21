@@ -2,12 +2,19 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { describe, expect, test } from "vitest";
-import { rollup as rollupBuild, type Plugin } from "rollup";
+import {
+  type OutputChunk,
+  rollup as rollupBuild,
+  type Plugin,
+} from "rollup";
 
 import { ValibotCompiler } from "../src/unplugin.js";
 
 describe("unplugin integration (rollup)", () => {
   test("multifile build", async () => {
+    const outDir = `${import.meta.dirname}/cases/multifile/rollup`;
+    fs.rmSync(outDir, { recursive: true, force: true });
+
     const bundle = await rollupBuild({
       input: `${import.meta.dirname}/cases/multifile/Blog.ts`,
       external: ["valibot"],
@@ -15,12 +22,24 @@ describe("unplugin integration (rollup)", () => {
     });
 
     const { output } = await bundle.write({
-      dir: `${import.meta.dirname}/cases/multifile/rollup`,
+      dir: outDir,
       format: "esm",
       exports: "auto",
     });
 
-    expect(output.some((chunk) => chunk.type === "chunk")).toBe(true);
+    const blogChunk = output.find(
+      (chunk): chunk is OutputChunk =>
+        chunk.type === "chunk" &&
+        typeof chunk.facadeModuleId === "string" &&
+        chunk.facadeModuleId.endsWith("Blog.ts"),
+    );
+    expect(blogChunk).toBeTruthy();
+    if (blogChunk) {
+      expect(blogChunk.code).toContain("String__");
+      expect(blogChunk.code).toContain("Pipe__");
+      expect(blogChunk.code).not.toContain("v.string(");
+      expect(blogChunk.code).not.toContain("v.nanoid(");
+    }
 
     await bundle.close();
   });

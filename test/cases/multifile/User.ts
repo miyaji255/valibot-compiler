@@ -10,6 +10,6 @@ import {
 
 export const User = object({
   userId: pipe(string(), nanoid()),
-  username: string(),
+  username: string("required username"),
   age: pipe(number(), integer(), minValue(0)),
 });

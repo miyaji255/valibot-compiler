@@ -14,71 +14,44 @@ const entry = (
 });
 
 describe("CacheStore", () => {
-  test("returns an empty module when no entries are registered", () => {
+  test("returns null when no entries are registered", () => {
     const store = new CacheStore(CACHE_MODULE_ID);
 
-    expect(store.toModuleSource()).toMatchInlineSnapshot(`
-      "// Generated valibot cache
-      export {}
-      "
+    expect(store.getModuleSource("Missing__id")).toBeNull();
+  });
+
+  test("serializes a single entry with its dependencies", () => {
+    const store = new CacheStore(CACHE_MODULE_ID);
+    store.register([
+      entry({
+        key: "number",
+        identifier: "Number__def",
+        callee: "number",
+        expression: "number(String__abc)",
+        dependencies: ["String__abc"],
+      }),
+      entry({
+        key: "string",
+        identifier: "String__abc",
+        callee: "string",
+        expression: "string()",
+      }),
+    ]);
+
+    expect(store.getModuleSource("Number__def")).toMatchInlineSnapshot(`
+      "import { number } from "valibot";
+import String__abc from "valibot-compiler:cache/String__abc";
+
+export default number(String__abc);
+"
     `);
   });
 
-  test("serializes entries in dependency order with sorted imports", () => {
+  test("resets internal state", () => {
     const store = new CacheStore(CACHE_MODULE_ID);
-    const first = entry({
-      key: "string",
-      identifier: "String__abc",
-      callee: "string",
-      expression: "string()",
-    });
-    const second = entry({
-      key: "number",
-      identifier: "Number__def",
-      callee: "number",
-      expression: "number(String__abc)",
-      dependencies: ["String__abc"],
-    });
-
-    // Register out of dependency order to validate topo sort
-    store.register([second, first], { invalidate: vi.fn() });
-
-    expect(store.toModuleSource()).toMatchInlineSnapshot(`
-      "import { number, string } from "valibot";
-
-      export const String__abc = string();
-      export const Number__def = number(String__abc);
-      "
-    `);
-  });
-
-  test("invalidates the cache module when already loaded and new entries arrive", () => {
-    const invalidate = vi.fn();
-    const store = new CacheStore(CACHE_MODULE_ID);
-    store.register([entry({ key: "a", identifier: "A" })], { invalidate });
-
-    store.markLoaded();
-    store.register([entry({ key: "b", identifier: "B" })], { invalidate });
-
-    expect(invalidate).toHaveBeenCalledTimes(1);
-    expect(invalidate).toHaveBeenCalledWith("valibot-compiler:cache");
-  });
-
-  test("resets internal state including load flag", () => {
-    const invalidate = vi.fn();
-    const store = new CacheStore(CACHE_MODULE_ID);
-    store.register([entry({ key: "a", identifier: "A" })], { invalidate });
-    store.markLoaded();
+    store.register([entry({ key: "a", identifier: "A" })]);
 
     store.reset();
-    store.register([entry({ key: "b", identifier: "B" })], { invalidate });
-
-    expect(invalidate).not.toHaveBeenCalled();
-    expect(store.toModuleSource()).toMatchInlineSnapshot(`
-      "import { string } from "valibot";
-
-      export const B = string();
-      "
-    `);
+    expect(store.getModuleSource("A")).toBeNull();
   });
 });

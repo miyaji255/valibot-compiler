@@ -302,6 +302,74 @@ type CallProcessingContext = {
   entriesOrdered: CacheModuleEntry[];
 };
 
+function renderArgumentExpression(
+  expr: Expression,
+  context: CallProcessingContext,
+  dependencies: Set<string>,
+): string | null {
+  const unwrapped = unwrapExpression(expr);
+
+  if (isValibotCallExpression(unwrapped as AstNode, context.imports)) {
+    const nested = ensureCacheEntry(
+      unwrapped as RollupAstNode<CallExpression>,
+      context,
+    );
+    if (!nested) return null;
+    dependencies.add(nested.identifier);
+    return nested.identifier;
+  }
+
+  switch (unwrapped.type) {
+    case "ArrayExpression": {
+      const parts: string[] = [];
+      for (const element of unwrapped.elements) {
+        if (element === null) return null;
+        if (element.type === "SpreadElement") return null;
+        const rendered = renderArgumentExpression(
+          element as Expression,
+          context,
+          dependencies,
+        );
+        if (!rendered) return null;
+        parts.push(rendered);
+      }
+      return `[${parts.join(", ")}]`;
+    }
+    case "ObjectExpression": {
+      const parts: string[] = [];
+      for (const property of unwrapped.properties) {
+        if (property.type !== "Property") return null;
+        if (property.method || property.computed || property.shorthand) {
+          return null;
+        }
+        const key = property.key.type === "Identifier"
+          ? property.key.name
+          : property.key.type === "Literal" && property.key.value !== undefined
+            ? JSON.stringify(property.key.value)
+            : null;
+        if (!key) return null;
+        const rendered = renderArgumentExpression(
+          property.value as Expression,
+          context,
+          dependencies,
+        );
+        if (!rendered) return null;
+        parts.push(`${key}: ${rendered}`);
+      }
+      return `{ ${parts.join(", ")} }`;
+    }
+    case "Identifier":
+      return unwrapped.name;
+    default: {
+      const snippet = computeArgumentSnippet(
+        context.magic,
+        expr as unknown as AstNode,
+      );
+      return snippet;
+    }
+  }
+}
+
 function ensureCacheEntry(
   call: RollupAstNode<CallExpression>,
   context: CallProcessingContext,
@@ -327,26 +395,12 @@ function ensureCacheEntry(
     }
     const argument = unwrapExpression(rawArg as Expression);
 
-    if (isValibotCallExpression(argument as AstNode, context.imports)) {
-      const nested = ensureCacheEntry(
-        argument as RollupAstNode<CallExpression>,
-        context,
-      );
-      if (!nested) {
-        context.processed.set(call, null);
-        return null;
-      }
-      argumentExpressions.push(nested.identifier);
-      keyParts.push(nested.key);
-      dependencySet.add(nested.identifier);
-      continue;
-    }
-
-    const snippet = computeArgumentSnippet(
-      context.magic,
-      rawArg as unknown as AstNode,
+    const rendered = renderArgumentExpression(
+      argument,
+      context,
+      dependencySet,
     );
-    if (snippet === null) {
+    if (rendered === null) {
       context.processed.set(call, null);
       return null;
     }
@@ -361,7 +415,7 @@ function ensureCacheEntry(
       return null;
     }
 
-    argumentExpressions.push(snippet);
+    argumentExpressions.push(rendered);
     keyParts.push(normalized);
   }
 
@@ -646,7 +700,7 @@ export function transformWithEstree(
             replacedNodes.add(rollupNode);
           }
         }
-        return SKIP;
+        return entry ? SKIP : CONTINUE;
       }
       return CONTINUE;
     },
@@ -667,25 +721,15 @@ export function transformWithEstree(
       );
     });
 
-  const names = entriesOrdered.map((entry) => entry.identifier);
-  const cacheImportInfo = analyseCacheImport(ast, config.cacheModuleId);
-  if (cacheImportInfo) {
-    const importCode = renderCacheImport(
-      cacheImportInfo,
-      names,
-      config.cacheModuleId,
-    );
-    const start = getStart(cacheImportInfo.node as unknown as AstNode);
-    const end = getEnd(cacheImportInfo.node as unknown as AstNode);
-    if (start !== null && end !== null) {
-      magic.overwrite(start, end, importCode);
-    }
-  } else {
-    const importCode = renderNewCacheImport(names, config.cacheModuleId);
-    if (importCode.length > 0) {
-      const insertPos = findLastImportEnd(ast);
-      magic.appendLeft(insertPos, `${importCode}`);
-    }
+  const importCode = entriesOrdered
+    .map(
+      (entry) =>
+        `import ${entry.identifier} from "${config.cacheModuleId}/${entry.identifier}";`,
+    )
+    .join("\n");
+  if (importCode.length > 0) {
+    const insertPos = findLastImportEnd(ast);
+    magic.appendLeft(insertPos, `\n${importCode}\n`);
   }
 
   const map = magic.generateMap({

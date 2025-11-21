@@ -27,23 +27,31 @@ export const ValibotCompiler = createUnplugin(
         cacheStore.reset();
       },
       resolveId(id: string) {
-        if (id === CACHE_MODULE_ID) {
+        if (id === CACHE_MODULE_ID || id.startsWith(`${CACHE_MODULE_ID}/`)) {
           return id;
         }
         return null;
       },
       load(id: string) {
-        if (id !== CACHE_MODULE_ID) return null;
-        cacheStore.markLoaded();
-        return cacheStore.toModuleSource();
+        if (id === CACHE_MODULE_ID) {
+          return "// valibot-compiler cache root\nexport {};\n";
+        }
+        if (id.startsWith(`${CACHE_MODULE_ID}/`)) {
+          const identifier = id.slice(CACHE_MODULE_ID.length + 1);
+          return cacheStore.getModuleSource(identifier);
+        }
+        return null;
       },
       transform: {
         filter: {
           id: new RegExp(
-            `(${exts.map((e) => e.replaceAll(/(?=(\^|\$|\\|\.|\*|\+|\(|\)|\[|\]|\{|\}|\|))/g, "\\")).join("|")})$`,
-            "g",
+            `(${exts
+              .map((ext) =>
+                ext.replaceAll(/(?=(\^|\$|\\|\.|\*|\+|\(|\)|\[|\]|\{|\}|\|))/g, "\\"),
+              )
+              .join("|")})$`,
           ),
-          code: /import\s+.*\s+from\s+['"]valibot['"]/,
+          code: /import[\s\S]+from\s+['"]valibot['"]/,
         },
         handler: function (code, id) {
           let ast: AstNode;
@@ -61,7 +69,7 @@ export const ValibotCompiler = createUnplugin(
             cacheModuleId: CACHE_MODULE_ID,
             sourceId: id,
           });
-          cacheStore.register(result.cacheEntries, this);
+          cacheStore.register(result.cacheEntries);
           if (!result.changed) return null;
           return { code: result.code, map: result.map ?? null };
         },
