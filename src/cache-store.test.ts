@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 
 import { CACHE_MODULE_ID, CacheStore } from "./cache-store.js";
 import type { CacheModuleEntry } from "./estree-transform.js";

@@ -6,21 +6,15 @@ import type {
   ChainExpression,
   Expression,
   Identifier,
-  ImportDeclaration,
   Node,
   Literal,
-  NodeMap,
   Program,
   Property,
-  SimpleCallExpression,
   TemplateLiteral,
   Pattern,
-  Declaration,
   BaseNode,
-  Statement,
 } from "estree";
-import type { RollupAstNode as RollupAstNodePrimitive } from "rollup";
-// Omit<T, OmittedEstreeKeys> & AstNodeLocation;
+
 type RollupAstNode<T extends BaseNode | BaseNode[] | null | undefined> =
   T extends object
     ? {
@@ -342,11 +336,13 @@ function renderArgumentExpression(
         if (property.method || property.computed || property.shorthand) {
           return null;
         }
-        const key = property.key.type === "Identifier"
-          ? property.key.name
-          : property.key.type === "Literal" && property.key.value !== undefined
-            ? JSON.stringify(property.key.value)
-            : null;
+        const key =
+          property.key.type === "Identifier"
+            ? property.key.name
+            : property.key.type === "Literal" &&
+                property.key.value !== undefined
+              ? JSON.stringify(property.key.value)
+              : null;
         if (!key) return null;
         const rendered = renderArgumentExpression(
           property.value as Expression,
@@ -395,11 +391,7 @@ function ensureCacheEntry(
     }
     const argument = unwrapExpression(rawArg as Expression);
 
-    const rendered = renderArgumentExpression(
-      argument,
-      context,
-      dependencySet,
-    );
+    const rendered = renderArgumentExpression(argument, context, dependencySet);
     if (rendered === null) {
       context.processed.set(call, null);
       return null;
@@ -439,49 +431,6 @@ function ensureCacheEntry(
   return entry;
 }
 
-type CacheImportInfo = {
-  node: RollupAstNode<ImportDeclaration>;
-  hasDefault: boolean;
-  defaultLocal: string | null;
-  namespaceLocal: string | null;
-  named: Set<string>;
-};
-
-function analyseCacheImport(
-  program: RollupAstNode<Program>,
-  cacheModuleId: string,
-): CacheImportInfo | null {
-  for (const statement of program.body) {
-    if (statement.type !== "ImportDeclaration") continue;
-    if (statement.source.value !== cacheModuleId) continue;
-    const importNode = statement as RollupAstNode<ImportDeclaration>;
-    const named = new Set<string>();
-    let defaultLocal: string | null = null;
-    let namespaceLocal: string | null = null;
-    let hasDefault = false;
-
-    for (const specifier of importNode.specifiers) {
-      if (specifier.type === "ImportSpecifier") {
-        named.add(specifier.local.name);
-      } else if (specifier.type === "ImportDefaultSpecifier") {
-        hasDefault = true;
-        defaultLocal = specifier.local.name;
-      } else if (specifier.type === "ImportNamespaceSpecifier") {
-        namespaceLocal = specifier.local.name;
-      }
-    }
-
-    return {
-      node: importNode,
-      hasDefault,
-      defaultLocal,
-      namespaceLocal,
-      named,
-    };
-  }
-  return null;
-}
-
 function findLastImportEnd(program: RollupAstNode<Program>): number {
   let position = 0;
   for (const statement of program.body) {
@@ -494,84 +443,39 @@ function findLastImportEnd(program: RollupAstNode<Program>): number {
   return position;
 }
 
-function renderCacheImport(
-  info: CacheImportInfo,
-  names: string[],
-  cacheModuleId: string,
-): string {
-  const parts: string[] = [];
-  if (info.hasDefault && info.defaultLocal) {
-    parts.push(info.defaultLocal);
-  }
-  if (info.namespaceLocal) {
-    parts.push(`* as ${info.namespaceLocal}`);
-  }
-  if (names.length > 0) {
-    parts.push(`{ ${names.join(", ")} }`);
-  }
-  if (parts.length === 0) {
-    return `import "${cacheModuleId}";`;
-  }
-  return `import ${parts.join(", ")} from "${cacheModuleId}";`;
-}
-
-function renderNewCacheImport(names: string[], cacheModuleId: string): string {
-  if (names.length === 0) {
-    return "";
-  }
-  return `import { ${names.join(", ")} } from "${cacheModuleId}";\n`;
-}
-
-function getSymbolsFromPattern(
+function patternContainsValibot(
   pattern: RollupAstNode<Pattern>,
-  symbols: Set<string>,
-): void {
+  valibotSymbols: Set<string>,
+): boolean {
   switch (pattern.type) {
     case "Identifier":
-      symbols.add(pattern.name);
-      break;
+      return valibotSymbols.has(pattern.name);
     case "ObjectPattern":
-      for (const prop of pattern.properties) {
+      return pattern.properties.some((prop) => {
         if (prop.type === "RestElement") {
-          getSymbolsFromPattern(prop.argument, symbols);
-        } else if (prop.type === "Property") {
-          getSymbolsFromPattern(prop.value, symbols);
+          return patternContainsValibot(prop.argument, valibotSymbols);
         }
-      }
-      break;
+        if (prop.type === "Property") {
+          return patternContainsValibot(prop.value, valibotSymbols);
+        }
+        return false;
+      });
     case "ArrayPattern":
-      for (const element of pattern.elements) {
-        if (element) {
+      return (
+        pattern.elements.some((element) => {
+          if (!element) return false;
           if (element.type === "RestElement") {
-            getSymbolsFromPattern(element.argument, symbols);
-          } else {
-            getSymbolsFromPattern(element, symbols);
+            return patternContainsValibot(element.argument, valibotSymbols);
           }
-        }
-      }
-      break;
+          return patternContainsValibot(element, valibotSymbols);
+        }) ?? false
+      );
     case "RestElement":
-      getSymbolsFromPattern(pattern.argument, symbols);
-      break;
+      return patternContainsValibot(pattern.argument, valibotSymbols);
     case "AssignmentPattern":
-      getSymbolsFromPattern(pattern.left, symbols);
-      break;
-  }
-}
-
-function collectDeclaredSymbolsFromStatements(
-  statements: RollupAstNode<Statement>[],
-  symbols: Set<string>,
-): void {
-  for (const statement of statements) {
-    if (statement.type === "VariableDeclaration") {
-      for (const decl of statement.declarations)
-        getSymbolsFromPattern(decl.id, symbols);
-    } else if (statement.type === "FunctionDeclaration") {
-      symbols.add(statement.id.name);
-    } else if (statement.type === "ClassDeclaration") {
-      symbols.add(statement.id.name);
-    }
+      return patternContainsValibot(pattern.left, valibotSymbols);
+    default:
+      return false;
   }
 }
 
@@ -595,78 +499,80 @@ export function transformWithEstree(
   ]);
 
   // 重複宣言チェック
-  let hasCollision = false;
-  visitEstree(ast, {
-    enter: (node) => {
-      const rollupNode = node as AstNode;
-      switch (rollupNode.type) {
-        case "VariableDeclarator": {
-          const names = new Set<string>();
-          getSymbolsFromPattern(rollupNode.id as RollupAstNode<Pattern>, names);
-          for (const name of names) {
-            if (valibotSymbols.has(name)) {
-              hasCollision = true;
+  const hasCollision = (() => {
+    let shadowed = false;
+    visitEstree(ast, {
+      enter: (node) => {
+        const rollupNode = node as AstNode;
+        switch (rollupNode.type) {
+          case "VariableDeclarator":
+            if (
+              patternContainsValibot(
+                rollupNode.id as RollupAstNode<Pattern>,
+                valibotSymbols,
+              )
+            ) {
+              shadowed = true;
               return EXIT;
             }
-          }
-          break;
-        }
-        case "FunctionDeclaration":
-        case "ClassDeclaration": {
-          const id = (rollupNode as { id: Identifier | null }).id;
-          if (id && valibotSymbols.has(id.name)) {
-            hasCollision = true;
-            return EXIT;
-          }
-          break;
-        }
-        case "FunctionExpression":
-        case "ArrowFunctionExpression": {
-          for (const param of rollupNode.params) {
-            const names = new Set<string>();
-            getSymbolsFromPattern(param, names);
-            for (const name of names) {
-              if (valibotSymbols.has(name)) {
-                hasCollision = true;
-                return EXIT;
-              }
+            break;
+          case "FunctionDeclaration":
+          case "ClassDeclaration": {
+            const id = (rollupNode as { id: Identifier | null }).id;
+            if (id && valibotSymbols.has(id.name)) {
+              shadowed = true;
+              return EXIT;
             }
+            break;
           }
-          break;
-        }
-        case "CatchClause": {
-          const param = rollupNode.param;
-          if (param) {
-            const names = new Set<string>();
-            getSymbolsFromPattern(param, names);
-            for (const name of names) {
-              if (valibotSymbols.has(name)) {
-                hasCollision = true;
-                return EXIT;
-              }
+          case "FunctionExpression":
+          case "ArrowFunctionExpression":
+            if (
+              rollupNode.params.some((param) =>
+                patternContainsValibot(
+                  param as RollupAstNode<Pattern>,
+                  valibotSymbols,
+                ),
+              )
+            ) {
+              shadowed = true;
+              return EXIT;
             }
-          }
-          break;
-        }
-        case "ForInStatement":
-        case "ForOfStatement": {
-          const left = rollupNode.left;
-          if (left && left.type !== "VariableDeclaration") {
-            const names = new Set<string>();
-            getSymbolsFromPattern(left as RollupAstNode<Pattern>, names);
-            for (const name of names) {
-              if (valibotSymbols.has(name)) {
-                hasCollision = true;
-                return EXIT;
-              }
+            break;
+          case "CatchClause":
+            if (
+              rollupNode.param &&
+              patternContainsValibot(
+                rollupNode.param as RollupAstNode<Pattern>,
+                valibotSymbols,
+              )
+            ) {
+              shadowed = true;
+              return EXIT;
             }
+            break;
+          case "ForInStatement":
+          case "ForOfStatement": {
+            const left = rollupNode.left;
+            if (
+              left &&
+              left.type !== "VariableDeclaration" &&
+              patternContainsValibot(
+                left as RollupAstNode<Pattern>,
+                valibotSymbols,
+              )
+            ) {
+              shadowed = true;
+              return EXIT;
+            }
+            break;
           }
-          break;
         }
-      }
-      return CONTINUE;
-    },
-  });
+        return CONTINUE;
+      },
+    });
+    return shadowed;
+  })();
   if (hasCollision) {
     return { code, changed: false, cacheEntries: [], map: null };
   }
