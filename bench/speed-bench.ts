@@ -6,8 +6,8 @@ import OptionalNullableSchema from "./test_data/optional_nullable/schema.ts";
 import * as OptionalNullableData from "./test_data/optional_nullable/data.ts";
 import WideSchema from "./test_data/wide/schema.ts";
 import * as WideData from "./test_data/wide/data.ts";
-import SimpleSchema from "./test_data/simple/schema.ts";
-import * as SimpleData from "./test_data/simple/data.ts";
+import RealSchema from "./test_data/real/schema.ts";
+import * as RealData from "./test_data/real/data.ts";
 import { safeParse } from "valibot";
 import { Bench } from "tinybench";
 import { build } from "esbuild";
@@ -19,7 +19,7 @@ await build({
     `${import.meta.dirname}/test_data/many_features/schema.ts`,
     `${import.meta.dirname}/test_data/optional_nullable/schema.ts`,
     `${import.meta.dirname}/test_data/wide/schema.ts`,
-    `${import.meta.dirname}/test_data/simple/schema.ts`,
+    `${import.meta.dirname}/test_data/real/schema.ts`,
   ],
   bundle: true,
   outdir: `${import.meta.dirname}/test_data`,
@@ -27,6 +27,7 @@ await build({
   format: "esm",
   external: ["valibot"],
   splitting: false,
+  treeShaking: true,
   plugins: [ValibotCompiler.esbuild({})],
 });
 
@@ -38,7 +39,7 @@ const OptionalNullableSchemaCompiled = await import(
   "./test_data/optional_nullable/schema.js"
 );
 const WideSchemaCompiled = await import("./test_data/wide/schema.js");
-const SimpleSchemaCompiled = await import("./test_data/simple/schema.js");
+const RealSchemaCompiled = await import("./test_data/real/schema.js");
 
 const bench = new Bench();
 
@@ -73,11 +74,11 @@ bench.add("Wide Schema - Valid Data | with Compile", () => {
   safeParse(WideSchemaCompiled.default, WideData.valid);
 });
 
-bench.add("Simple Schema - Valid Data | without Compile", () => {
-  safeParse(SimpleSchema, SimpleData.valid);
+bench.add("Real Schema - Valid Data | without Compile", () => {
+  safeParse(RealSchema, RealData.valid);
 });
-bench.add("Simple Schema - Valid Data | with Compile", () => {
-  safeParse(SimpleSchemaCompiled.default, SimpleData.valid);
+bench.add("Real Schema - Valid Data | with Compile", () => {
+  safeParse(RealSchemaCompiled.default, RealData.valid);
 });
 
 await bench.run();

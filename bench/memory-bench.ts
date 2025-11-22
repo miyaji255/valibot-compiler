@@ -8,7 +8,7 @@ await build({
     `${import.meta.dirname}/test_data/many_features/schema.ts`,
     `${import.meta.dirname}/test_data/optional_nullable/schema.ts`,
     `${import.meta.dirname}/test_data/wide/schema.ts`,
-    `${import.meta.dirname}/test_data/simple/schema.ts`,
+    `${import.meta.dirname}/test_data/real/schema.ts`,
   ],
   bundle: true,
   outdir: `${import.meta.dirname}/test_data`,
@@ -16,27 +16,27 @@ await build({
   format: "esm",
   external: ["valibot"],
   splitting: false,
+  treeShaking: true,
   plugins: [ValibotCompiler.esbuild({})],
 });
 
 function runRunner(modulePath: string): {
   rss: number;
-  heapTotal: number;
   heapUsed: number;
   external: number;
 } {
-  const process = spawnSync("node", [
+  const child = spawnSync(process.execPath, [
     "--expose-gc",
     "--experimental-strip-types",
     "--no-warnings=ExperimentalWarning",
     `${import.meta.dirname}/memory-bench.child.ts`,
     modulePath,
   ]);
-  if (process.status !== 0) {
-    console.error(process.stderr.toString());
-    throw new Error(`Process exited with code ${process.status}`);
+  if (child.status !== 0) {
+    console.error(child.stderr.toString());
+    throw new Error(`Process exited with code ${child.status}`);
   }
-  return JSON.parse(process.stdout.toString());
+  return JSON.parse(child.stdout.toString());
 }
 
 const tasks: {
@@ -76,12 +76,12 @@ const tasks: {
     module: "test_data/wide/schema.js",
   },
   {
-    name: "Simple | without Compile",
-    module: "test_data/simple/schema.ts",
+    name: "Real | without Compile",
+    module: "test_data/real/schema.ts",
   },
   {
-    name: "Simple | with Compile",
-    module: "test_data/simple/schema.js",
+    name: "Real | with Compile",
+    module: "test_data/real/schema.js",
   },
 ];
 
@@ -89,7 +89,9 @@ const results = tasks.map((task) => {
   const memoryUsage = runRunner(`${import.meta.dirname}/${task.module}`);
   return {
     name: task.name,
-    ...memoryUsage,
+    "rss (bytes)": memoryUsage.rss,
+    "heap Used (bytes)": memoryUsage.heapUsed,
+    "external (bytes)": memoryUsage.external,
   };
 });
 

@@ -12,14 +12,11 @@ const before = process.memoryUsage();
 
 const _ = await import(target);
 
-// give a tiny time for any microtasks triggered by module evaluation
-await new Promise((r) => setTimeout(r, 20));
 global.gc();
 const after = process.memoryUsage();
 
 const diff = {
   rss: after.rss - before.rss,
-  heapTotal: after.heapTotal - before.heapTotal,
   heapUsed: after.heapUsed - before.heapUsed,
   external: after.external - before.external,
 };
