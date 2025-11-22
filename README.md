@@ -2,6 +2,9 @@
 
 An **unplugin** that precomputes repeated `valibot` schema calls at build time and injects cached references to speed up bundles across Rollup, Vite, esbuild, and Webpack.
 
+> [!WARNING]
+> This is an experimental project. Do not use it in production.
+
 ## Features
 - Works across bundlers via `unplugin`.
 - Generates one virtual module per cached valibot call (e.g. `valibot-compiler:cache/String__abcd1234`).
