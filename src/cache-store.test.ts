@@ -3,6 +3,9 @@ import { describe, expect, test } from "vitest";
 import { CACHE_MODULE_ID, CacheStore } from "./cache-store.js";
 import type { CacheModuleEntry } from "./estree-transform.js";
 
+const cacheDep = (identifier: string) =>
+  ({ kind: "cache", identifier }) as const;
+
 const entry = (
   overrides: Partial<CacheModuleEntry> = {},
 ): CacheModuleEntry => ({
@@ -28,7 +31,7 @@ describe("CacheStore", () => {
         identifier: "Number__def",
         callee: "number",
         expression: "number(String__abc)",
-        dependencies: ["String__abc"],
+        dependencies: [cacheDep("String__abc")],
       }),
       entry({
         key: "string",
@@ -43,6 +46,34 @@ describe("CacheStore", () => {
 import String__abc from "valibot-compiler:cache/String__abc";
 
 export default number(String__abc);
+"
+    `);
+  });
+
+  test("serializes import dependencies", () => {
+    const store = new CacheStore(CACHE_MODULE_ID);
+    store.register([
+      entry({
+        identifier: "Array__abc",
+        callee: "array",
+        expression: "array(Comment)",
+        dependencies: [
+          {
+            kind: "import",
+            source: "./comment",
+            imported: "Comment",
+            isNamespace: false,
+            local: "Comment",
+          },
+        ],
+      }),
+    ]);
+
+    expect(store.getModuleSource("Array__abc")).toMatchInlineSnapshot(`
+      "import { array } from "valibot";
+import { Comment } from "./comment";
+
+export default array(Comment);
 "
     `);
   });

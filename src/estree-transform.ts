@@ -13,6 +13,11 @@ import type {
   TemplateLiteral,
   Pattern,
   BaseNode,
+  VariableDeclaration,
+  VariableDeclarator,
+  ImportDeclaration,
+  ArrowFunctionExpression,
+  FunctionExpression,
 } from "estree";
 
 type RollupAstNode<T extends BaseNode | BaseNode[] | null | undefined> =
@@ -37,7 +42,8 @@ export interface CacheModuleEntry {
   identifier: string;
   callee: string;
   expression: string;
-  dependencies: string[];
+  dependencies: CacheDependency[];
+  sourceId?: string;
 }
 
 export interface TransformOut {
@@ -51,6 +57,42 @@ type ImportInfo = {
   named: Map<string, string>;
   namespaces: Set<string>;
 };
+
+type ImportBinding = {
+  local: string;
+  source: string;
+  type: "named" | "default" | "namespace";
+  imported: string | null;
+};
+
+export type CacheDependency =
+  | { kind: "cache"; identifier: string }
+  | {
+      kind: "import";
+      source: string;
+      imported: string | null;
+      isNamespace: boolean;
+      local: string;
+    };
+
+const SAFE_GLOBAL_IDENTIFIERS = new Set([
+  "String",
+  "Number",
+  "Boolean",
+  "BigInt",
+  "Date",
+  "RegExp",
+  "Array",
+  "Object",
+  "JSON",
+  "Math",
+  "parseInt",
+  "parseFloat",
+  "encodeURI",
+  "decodeURI",
+  "encodeURIComponent",
+  "decodeURIComponent",
+]);
 
 type WithRange = {
   start?: number | null;
@@ -94,6 +136,321 @@ function collectValibotImports(program: RollupAstNode<Program>): ImportInfo {
   }
 
   return { named, namespaces };
+}
+
+function collectImportBindings(
+  program: RollupAstNode<Program>,
+): Map<string, ImportBinding> {
+  const bindings = new Map<string, ImportBinding>();
+
+  for (const statement of program.body) {
+    if (statement.type !== "ImportDeclaration") continue;
+    for (const specifier of statement.specifiers) {
+      if (specifier.type === "ImportSpecifier") {
+        const imported =
+          specifier.imported.type === "Identifier"
+            ? specifier.imported.name
+            : String(specifier.imported.value);
+        bindings.set(specifier.local.name, {
+          local: specifier.local.name,
+          source: String(statement.source.value),
+          type: "named",
+          imported,
+        });
+      } else if (specifier.type === "ImportDefaultSpecifier") {
+        bindings.set(specifier.local.name, {
+          local: specifier.local.name,
+          source: String(statement.source.value),
+          type: "default",
+          imported: null,
+        });
+      } else if (specifier.type === "ImportNamespaceSpecifier") {
+        bindings.set(specifier.local.name, {
+          local: specifier.local.name,
+          source: String(statement.source.value),
+          type: "namespace",
+          imported: null,
+        });
+      }
+    }
+  }
+
+  return bindings;
+}
+
+function collectConstBindings(
+  program: RollupAstNode<Program>,
+): Map<string, RollupAstNode<Expression>> {
+  const bindings = new Map<string, RollupAstNode<Expression>>();
+
+  for (const statement of program.body) {
+    const declaration =
+      statement.type === "VariableDeclaration"
+        ? (statement as RollupAstNode<VariableDeclaration>)
+        : statement.type === "ExportNamedDeclaration" &&
+            statement.declaration &&
+            statement.declaration.type === "VariableDeclaration"
+          ? (statement.declaration as RollupAstNode<VariableDeclaration>)
+          : null;
+    if (!declaration || declaration.kind !== "const") continue;
+    for (const declarator of declaration.declarations) {
+      if (
+        declarator.type !== "VariableDeclarator" ||
+        declarator.id.type !== "Identifier" ||
+        !declarator.init
+      ) {
+        continue;
+      }
+      const init = declarator.init as RollupAstNode<Expression>;
+      bindings.set(declarator.id.name, init);
+    }
+  }
+
+  return bindings;
+}
+
+function collectPatternNames(pattern: RollupAstNode<Pattern>, names: Set<string>): void {
+  switch (pattern.type) {
+    case "Identifier":
+      names.add(pattern.name);
+      break;
+    case "ObjectPattern":
+      for (const prop of pattern.properties) {
+        if (prop.type === "RestElement") {
+          collectPatternNames(prop.argument as RollupAstNode<Pattern>, names);
+        } else if (prop.type === "Property") {
+          collectPatternNames(prop.value as RollupAstNode<Pattern>, names);
+        }
+      }
+      break;
+    case "ArrayPattern":
+      for (const element of pattern.elements) {
+        if (!element) continue;
+        collectPatternNames(element as RollupAstNode<Pattern>, names);
+      }
+      break;
+    case "RestElement":
+      collectPatternNames(pattern.argument as RollupAstNode<Pattern>, names);
+      break;
+    case "AssignmentPattern":
+      collectPatternNames(pattern.left as RollupAstNode<Pattern>, names);
+      break;
+  }
+}
+
+function isBindingIdentifier(
+  node: RollupAstNode<Identifier>,
+  parent: AstNode | undefined,
+): boolean {
+  if (!parent) return false;
+  switch (parent.type) {
+    case "VariableDeclarator":
+      return (parent as VariableDeclarator).id === node;
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+      return (parent as { id: Identifier | null }).id === node;
+    case "ClassDeclaration":
+    case "ClassExpression":
+      return (parent as { id: Identifier | null }).id === node;
+    case "ImportSpecifier":
+    case "ImportDefaultSpecifier":
+    case "ImportNamespaceSpecifier":
+      return true;
+    case "Property":
+      return (parent as Property).key === node && !(parent as Property).computed;
+    case "MemberExpression":
+      return (parent as { property: AstNode; computed: boolean }).property ===
+        node && !(parent as { computed: boolean }).computed
+        ? true
+        : false;
+    case "LabeledStatement":
+      return (parent as { label: Identifier }).label === node;
+    case "CatchClause":
+      return (parent as { param: AstNode | null }).param === node;
+    case "AssignmentPattern":
+      return (parent as { left: AstNode }).left === node;
+    default:
+      return false;
+  }
+}
+
+function isMemberPropertyIdentifier(
+  node: RollupAstNode<Identifier>,
+  context: CallProcessingContext,
+  initialParent: AstNode | undefined,
+): boolean {
+  let current: AstNode | undefined =
+    context.parentMap.get(node as unknown as AstNode) ?? initialParent;
+  while (current) {
+    if (
+      current.type === "MemberExpression" &&
+      (current as unknown as { property: AstNode; computed: boolean }).property ===
+        node &&
+      !(current as unknown as { computed: boolean }).computed
+    ) {
+      return true;
+    }
+    current = context.parentMap.get(current as unknown as AstNode);
+  }
+  return false;
+}
+
+function isParamIdentifier(
+  node: RollupAstNode<Identifier>,
+  context: CallProcessingContext,
+): boolean {
+  let current: AstNode | undefined = context.parentMap.get(
+    node as unknown as AstNode,
+  );
+  while (current) {
+    if (
+      current.type === "FunctionExpression" ||
+      current.type === "ArrowFunctionExpression" ||
+      current.type === "FunctionDeclaration"
+    ) {
+      const names = new Set<string>();
+      const func = current as {
+        params: Pattern[];
+        id?: Identifier | null;
+      };
+      for (const param of func.params) {
+        collectPatternNames(param as RollupAstNode<Pattern>, names);
+      }
+      if (func.id) names.add(func.id.name);
+      if (names.has(node.name)) return true;
+    }
+    current = context.parentMap.get(current as unknown as AstNode);
+  }
+  return false;
+}
+
+function gatherFunctionDependencies(
+  fn: RollupAstNode<ArrowFunctionExpression | FunctionExpression>,
+  context: CallProcessingContext,
+  dependencies: Map<string, CacheDependency>,
+): boolean {
+  const scopeStack: Set<string>[] = [];
+
+function enterFunction(
+  func: RollupAstNode<ArrowFunctionExpression | FunctionExpression>,
+): void {
+  const names = new Set<string>();
+  if (func.type === "FunctionExpression" && func.id) {
+    names.add(func.id.name);
+  }
+  for (const param of func.params) {
+    collectPatternNames(param as RollupAstNode<Pattern>, names);
+  }
+  scopeStack.push(names);
+}
+
+  function exitFunction(): void {
+    scopeStack.pop();
+  }
+
+  function isDeclared(name: string): boolean {
+    for (let i = scopeStack.length - 1; i >= 0; i -= 1) {
+      if (scopeStack[i].has(name)) return true;
+    }
+    return false;
+  }
+
+  function walk(node: AstNode, parent?: AstNode): boolean {
+    if (
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression"
+    ) {
+      const func = node as RollupAstNode<
+        ArrowFunctionExpression | FunctionExpression
+      >;
+      enterFunction(func);
+      // traverse body
+      const bodyNodes =
+        func.body && func.body.type === "BlockStatement"
+          ? func.body.body
+          : [func.body as unknown as AstNode];
+      for (const stmt of bodyNodes) {
+        if (!walk(stmt as AstNode, func as AstNode)) return false;
+      }
+      exitFunction();
+      return true;
+    }
+
+    switch (node.type) {
+      case "VariableDeclarator": {
+        const declarator = node as RollupAstNode<VariableDeclarator>;
+        collectPatternNames(declarator.id as RollupAstNode<Pattern>, scopeStack[scopeStack.length - 1]);
+        if (declarator.init) {
+          if (!walk(declarator.init as AstNode, node as AstNode)) return false;
+        }
+        return true;
+      }
+      case "FunctionDeclaration": {
+        const fnNode = node as { id: Identifier | null };
+        if (fnNode.id) {
+          scopeStack[scopeStack.length - 1].add(fnNode.id.name);
+        }
+        // do not traverse into separate function scopes
+        return true;
+      }
+      case "ClassDeclaration": {
+        const classNode = node as { id: Identifier | null };
+        if (classNode.id) {
+          scopeStack[scopeStack.length - 1].add(classNode.id.name);
+        }
+        return true;
+      }
+      case "Identifier": {
+        const idNode = node as RollupAstNode<Identifier>;
+        const actualParent =
+          context.parentMap.get(idNode as unknown as AstNode) ?? parent;
+        if (
+          isBindingIdentifier(idNode, actualParent) ||
+          isMemberPropertyIdentifier(idNode, context, actualParent)
+        ) {
+          return true;
+        }
+        if (isParamIdentifier(idNode, context)) return true;
+        if (isDeclared(idNode.name)) return true;
+        const resolved = resolveIdentifierReference(
+          idNode,
+          context,
+          dependencies,
+        );
+        if (!resolved) return false;
+        return true;
+      }
+      default: {
+        // traverse children generically
+        let shouldContinue = true;
+        visitEstree(node as BaseNode, {
+          enter(child, _index, _parent) {
+            if (child === node) return CONTINUE;
+            if (!walk(child as AstNode, node as AstNode)) {
+              shouldContinue = false;
+              return EXIT;
+            }
+            return CONTINUE;
+          },
+        });
+        return shouldContinue;
+      }
+    }
+  }
+
+  enterFunction(fn);
+  const bodyNodes =
+    fn.body && fn.body.type === "BlockStatement"
+      ? fn.body.body
+      : [fn.body as unknown as AstNode];
+  for (const stmt of bodyNodes) {
+    if (!walk(stmt as AstNode, fn as AstNode)) {
+      exitFunction();
+      return false;
+    }
+  }
+  exitFunction();
+  return true;
 }
 
 function unwrapExpression(node: Expression): Expression {
@@ -219,7 +576,7 @@ function buildCallKey(callee: string, parts: string[]): string {
 function normalizeArgumentForKey(
   expr: Expression,
   context: CallProcessingContext,
-  dependencies: Set<string>,
+  dependencies: Map<string, CacheDependency>,
 ): string | null {
   const unwrapped = unwrapExpression(expr);
   if (isValibotCallExpression(unwrapped as AstNode, context.imports)) {
@@ -228,7 +585,10 @@ function normalizeArgumentForKey(
       context,
     );
     if (!nested) return null;
-    dependencies.add(nested.identifier);
+    addDependency(dependencies, {
+      kind: "cache",
+      identifier: nested.identifier,
+    });
     return nested.key;
   }
   switch (unwrapped.type) {
@@ -236,6 +596,29 @@ function normalizeArgumentForKey(
       return serializeLiteral(unwrapped);
     case "TemplateLiteral":
       return serializeTemplateLiteral(unwrapped);
+    case "Identifier": {
+      const resolved = resolveIdentifierReference(
+        unwrapped,
+        context,
+        dependencies,
+      );
+      if (!resolved) return null;
+      return `identifier:${resolved.key}`;
+    }
+    case "ArrowFunctionExpression":
+    case "FunctionExpression": {
+      const fn = unwrapped as RollupAstNode<
+        ArrowFunctionExpression | FunctionExpression
+      >;
+      const ok = gatherFunctionDependencies(fn, context, dependencies);
+      if (!ok) return null;
+      const snippet = computeArgumentSnippet(
+        context.magic,
+        fn as unknown as AstNode,
+      );
+      if (!snippet) return null;
+      return `fn:${hashSum(snippet)}`;
+    }
     case "ArrayExpression": {
       const result: string[] = [];
       for (const element of unwrapped.elements) {
@@ -269,7 +652,10 @@ function normalizeArgumentForKey(
           value.type !== "TemplateLiteral" &&
           value.type !== "ArrayExpression" &&
           value.type !== "ObjectExpression" &&
-          value.type !== "CallExpression"
+          value.type !== "CallExpression" &&
+          value.type !== "Identifier" &&
+          value.type !== "ArrowFunctionExpression" &&
+          value.type !== "FunctionExpression"
         ) {
           return null;
         }
@@ -288,18 +674,130 @@ function normalizeArgumentForKey(
   }
 }
 
+function buildParentMap(root: AstNode): WeakMap<AstNode, AstNode> {
+  const map = new WeakMap<AstNode, AstNode>();
+  const stack: AstNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop() as AstNode;
+    for (const key of Object.keys(node as object)) {
+      const value = (node as Record<string, unknown>)[key];
+      if (!value) continue;
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (
+            item &&
+            typeof item === "object" &&
+            "type" in (item as Record<string, unknown>)
+          ) {
+            map.set(item as AstNode, node);
+            stack.push(item as AstNode);
+          }
+        }
+      } else if (
+        typeof value === "object" &&
+        "type" in (value as Record<string, unknown>)
+      ) {
+        map.set(value as AstNode, node);
+        stack.push(value as AstNode);
+      }
+    }
+  }
+  return map;
+}
+
 type CallProcessingContext = {
   magic: MagicString;
   imports: ImportInfo;
   processed: ProcessedCallMap;
   entriesByKey: Map<string, CacheModuleEntry>;
   entriesOrdered: CacheModuleEntry[];
+  parentMap: WeakMap<AstNode, AstNode>;
+  importBindings: Map<string, ImportBinding>;
+  constBindings: Map<string, RollupAstNode<Expression>>;
+  identifierEntries: Map<string, CacheModuleEntry>;
 };
+
+function dependencyKey(dependency: CacheDependency): string {
+  if (dependency.kind === "cache") {
+    return `cache:${dependency.identifier}`;
+  }
+  const imported =
+    dependency.imported === null ? "default" : dependency.imported;
+  const namespace = dependency.isNamespace ? "namespace" : "named";
+  return `import:${dependency.source}:${imported}:${namespace}:${dependency.local}`;
+}
+
+function addDependency(
+  dependencies: Map<string, CacheDependency>,
+  dependency: CacheDependency,
+): void {
+  dependencies.set(dependencyKey(dependency), dependency);
+}
+
+function resolveIdentifierReference(
+  identifier: Identifier,
+  context: CallProcessingContext,
+  dependencies: Map<string, CacheDependency>,
+): { key: string; rendered: string } | null {
+  const name = identifier.name;
+
+  const cachedEntry = context.identifierEntries.get(name);
+  if (cachedEntry) {
+    addDependency(dependencies, { kind: "cache", identifier: cachedEntry.identifier });
+    return { key: cachedEntry.key, rendered: cachedEntry.identifier };
+  }
+
+  const constInit = context.constBindings.get(name);
+  if (constInit) {
+    const normalizedInit = unwrapExpression(
+      constInit as unknown as Expression,
+    );
+    if (
+      normalizedInit.type === "CallExpression" &&
+      isValibotCallExpression(normalizedInit as AstNode, context.imports)
+    ) {
+      const entry = ensureCacheEntry(
+        normalizedInit as RollupAstNode<CallExpression>,
+        context,
+      );
+      if (entry) {
+        context.identifierEntries.set(name, entry);
+        addDependency(dependencies, {
+          kind: "cache",
+          identifier: entry.identifier,
+        });
+        return { key: entry.key, rendered: entry.identifier };
+      }
+    }
+  }
+
+  const binding = context.importBindings.get(name);
+  if (binding) {
+    const dependency: CacheDependency = {
+      kind: "import",
+      source: binding.source,
+      imported: binding.imported,
+      isNamespace: binding.type === "namespace",
+      local: binding.local,
+    };
+    addDependency(dependencies, dependency);
+    const importKey = `import:${binding.source}:${
+      binding.imported ?? "default"
+    }:${binding.type}`;
+    return { key: importKey, rendered: binding.local };
+  }
+
+  if (SAFE_GLOBAL_IDENTIFIERS.has(name)) {
+    return { key: `global:${name}`, rendered: name };
+  }
+
+  return null;
+}
 
 function renderArgumentExpression(
   expr: Expression,
   context: CallProcessingContext,
-  dependencies: Set<string>,
+  dependencies: Map<string, CacheDependency>,
 ): string | null {
   const unwrapped = unwrapExpression(expr);
 
@@ -309,7 +807,10 @@ function renderArgumentExpression(
       context,
     );
     if (!nested) return null;
-    dependencies.add(nested.identifier);
+    addDependency(dependencies, {
+      kind: "cache",
+      identifier: nested.identifier,
+    });
     return nested.identifier;
   }
 
@@ -354,8 +855,25 @@ function renderArgumentExpression(
       }
       return `{ ${parts.join(", ")} }`;
     }
+    case "ArrowFunctionExpression":
+    case "FunctionExpression": {
+      const fn = unwrapped as RollupAstNode<
+        ArrowFunctionExpression | FunctionExpression
+      >;
+      const ok = gatherFunctionDependencies(fn, context, dependencies);
+      if (!ok) return null;
+      const snippet = computeArgumentSnippet(
+        context.magic,
+        fn as unknown as AstNode,
+      );
+      return snippet;
+    }
     case "Identifier":
-      return unwrapped.name;
+      return resolveIdentifierReference(
+        unwrapped,
+        context,
+        dependencies,
+      )?.rendered ?? null;
     default: {
       const snippet = computeArgumentSnippet(
         context.magic,
@@ -379,10 +897,11 @@ function ensureCacheEntry(
     context.processed.set(call, null);
     return null;
   }
+  const calleeName = calleeInfo.exported;
 
   const argumentExpressions: string[] = [];
   const keyParts: string[] = [];
-  const dependencySet = new Set<string>();
+  const dependencySet = new Map<string, CacheDependency>();
 
   for (const rawArg of call.arguments) {
     if (rawArg.type === "SpreadElement") {
@@ -422,11 +941,28 @@ function ensureCacheEntry(
       identifier,
       callee: calleeInfo.exported,
       expression,
-      dependencies: Array.from(dependencySet),
+      dependencies: Array.from(dependencySet.values()),
     };
     context.entriesByKey.set(key, entry);
     context.entriesOrdered.push(entry);
   }
+
+  const parent = context.parentMap.get(call as AstNode);
+  if (
+    parent &&
+    parent.type === "VariableDeclarator" &&
+    parent.id.type === "Identifier"
+  ) {
+    const declaration = context.parentMap.get(parent as AstNode);
+    if (
+      declaration &&
+      declaration.type === "VariableDeclaration" &&
+      (declaration as VariableDeclaration).kind === "const"
+    ) {
+      context.identifierEntries.set(parent.id.name, entry);
+    }
+  }
+
   context.processed.set(call, entry);
   return entry;
 }
@@ -489,6 +1025,9 @@ export function transformWithEstree(
   }
 
   const imports = collectValibotImports(ast);
+  const importBindings = collectImportBindings(ast);
+  const constBindings = collectConstBindings(ast);
+  const parentMap = buildParentMap(ast as AstNode);
   if (imports.named.size === 0 && imports.namespaces.size === 0) {
     return { code, changed: false, cacheEntries: [], map: null };
   }
@@ -583,6 +1122,7 @@ export function transformWithEstree(
   const entriesOrdered: CacheModuleEntry[] = [];
   const replacements: { start: number; end: number; identifier: string }[] = [];
   const replacedNodes = new WeakSet<AstNode>();
+  const identifierEntries = new Map<string, CacheModuleEntry>();
 
   const context: CallProcessingContext = {
     magic,
@@ -590,6 +1130,10 @@ export function transformWithEstree(
     processed,
     entriesByKey,
     entriesOrdered,
+    parentMap,
+    importBindings,
+    constBindings,
+    identifierEntries,
   };
 
   visitEstree(ast, {
@@ -646,7 +1190,10 @@ export function transformWithEstree(
   return {
     code: magic.toString(),
     changed: true,
-    cacheEntries: entriesOrdered,
+    cacheEntries: entriesOrdered.map((entry) => ({
+      ...entry,
+      sourceId: config.sourceId,
+    })),
     map,
   };
 }

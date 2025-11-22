@@ -1,5 +1,4 @@
-import * as v from 'valibot';
-import { string, nanoid, pipe, number, integer, minValue, object } from 'valibot';
+import { string, nanoid, pipe, number, integer, minValue, object, array } from 'valibot';
 
 var String__b9a25456 = string();
 
@@ -21,11 +20,16 @@ var Object__cef94e3e = object({ userId: Pipe__3d2225c4, username: String__599e5f
 
 const User = Object__cef94e3e;
 
-const Blog = v.object({
-  id: Pipe__3d2225c4,
-  title: String__b9a25456,
-  content: String__b9a25456,
-  author: User,
-});
+var Object__39b6b332 = object({ id: Pipe__3d2225c4, blogId: String__b9a25456, content: String__b9a25456, author: User });
 
-export { Blog };
+var Array__0d3f089c = array(String__b9a25456);
+
+var Array__2b5dcfc9 = array(Object__39b6b332);
+
+var Object__55542a5d = object({ id: Pipe__3d2225c4, title: String__b9a25456, content: String__b9a25456, author: User, keywords: Array__0d3f089c, comments: Array__2b5dcfc9 });
+
+const Comment = Object__39b6b332;
+
+const Blog = Object__55542a5d;
+
+export { Blog, Comment };

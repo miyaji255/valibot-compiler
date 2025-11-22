@@ -1,6 +1,6 @@
 export const CACHE_MODULE_ID = "valibot-compiler:cache";
 
-import type { CacheModuleEntry } from "./estree-transform.js";
+import type { CacheDependency, CacheModuleEntry } from "./estree-transform.js";
 
 export class CacheStore {
   #entriesByKey = new Map<string, CacheModuleEntry>();
@@ -19,21 +19,42 @@ export class CacheStore {
     }
   }
 
+  getEntry(identifier: string): CacheModuleEntry | undefined {
+    return this.#entriesByIdentifier.get(identifier);
+  }
+
   getModuleSource(identifier: string): string | null {
     const entry = this.#entriesByIdentifier.get(identifier);
     if (!entry) return null;
     const calleeImport = `import { ${entry.callee} } from "valibot";`;
-    const dependencyImports =
-      entry.dependencies.length > 0
-        ? entry.dependencies
-            .map(
-              (dep) => `import ${dep} from "${this.#cacheModuleId}/${dep}";`,
-            )
-            .join("\n")
-        : "";
-    const imports = [calleeImport, dependencyImports]
-      .filter(Boolean)
-      .join("\n");
+    const dependencyImports: string[] = [];
+    for (const dependency of entry.dependencies) {
+      if (dependency.kind === "cache") {
+        dependencyImports.push(
+          `import ${dependency.identifier} from "${this.#cacheModuleId}/${dependency.identifier}";`,
+        );
+        continue;
+      }
+      const importPath = dependency.source;
+      if (dependency.isNamespace) {
+        dependencyImports.push(
+          `import * as ${dependency.local} from "${importPath}";`,
+        );
+      } else if (dependency.imported === null) {
+        dependencyImports.push(
+          `import ${dependency.local} from "${importPath}";`,
+        );
+      } else if (dependency.imported === dependency.local) {
+        dependencyImports.push(
+          `import { ${dependency.imported} } from "${importPath}";`,
+        );
+      } else {
+        dependencyImports.push(
+          `import { ${dependency.imported} as ${dependency.local} } from "${importPath}";`,
+        );
+      }
+    }
+    const imports = [calleeImport, ...dependencyImports].filter(Boolean).join("\n");
     return `${imports}\n\nexport default ${entry.expression};\n`;
   }
 

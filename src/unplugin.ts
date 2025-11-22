@@ -1,5 +1,6 @@
 import type { AstNode } from "rollup";
 import { createUnplugin } from "unplugin";
+import path from "node:path";
 import type { AstNode as UnionAstNode } from "./estree-transform.ts";
 import { transformWithEstree } from "./estree-transform.ts";
 import { CACHE_MODULE_ID, CacheStore } from "./cache-store.ts";
@@ -26,9 +27,25 @@ export const ValibotCompiler = createUnplugin(
       buildStart() {
         cacheStore.reset();
       },
-      resolveId(id: string) {
+      resolveId(id: string, importer?: string) {
         if (id === CACHE_MODULE_ID || id.startsWith(`${CACHE_MODULE_ID}/`)) {
           return id;
+        }
+        if (
+          importer &&
+          importer.startsWith(`${CACHE_MODULE_ID}/`) &&
+          cacheStore.getEntry(importer.slice(CACHE_MODULE_ID.length + 1))
+        ) {
+          const entry = cacheStore.getEntry(
+            importer.slice(CACHE_MODULE_ID.length + 1),
+          );
+          const baseDir = entry?.sourceId
+            ? path.dirname(entry.sourceId)
+            : undefined;
+          const resolved = baseDir && id.startsWith(".")
+            ? path.resolve(baseDir, id)
+            : id;
+          return { id: resolved };
         }
         return null;
       },
@@ -56,7 +73,7 @@ export const ValibotCompiler = createUnplugin(
           ),
           code: /import[\s\S]+from\s+['"]valibot['"]/,
         },
-        handler: function (code, id) {
+        handler: async function (code, id) {
           let ast: AstNode;
           try {
             ast = this.parse(code);
@@ -72,7 +89,39 @@ export const ValibotCompiler = createUnplugin(
             cacheModuleId: CACHE_MODULE_ID,
             sourceId: id,
           });
-          cacheStore.register(result.cacheEntries);
+          const resolvedEntries = await Promise.all(
+            result.cacheEntries.map(async (entry) => {
+              const resolvedDependencies = await Promise.all(
+                entry.dependencies.map(async (dependency) => {
+                  if (
+                    dependency.kind === "import" &&
+                    dependency.source.startsWith(".")
+                  ) {
+                    let resolvedId: string | null = null;
+                    if (this.resolve) {
+                      const resolved = await this.resolve(
+                        dependency.source,
+                        id,
+                      );
+                      if (resolved?.id) {
+                        resolvedId = resolved.id;
+                      }
+                    }
+                    if (!resolvedId) {
+                      resolvedId = path.resolve(
+                        path.dirname(id),
+                        dependency.source,
+                      );
+                    }
+                    return { ...dependency, source: resolvedId };
+                  }
+                  return dependency;
+                }),
+              );
+              return { ...entry, dependencies: resolvedDependencies };
+            }),
+          );
+          cacheStore.register(resolvedEntries);
           if (!result.changed) return null;
           return { code: result.code, map: result.map ?? null };
         },
