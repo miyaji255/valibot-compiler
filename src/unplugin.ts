@@ -1,8 +1,8 @@
 import type { AstNode } from "rollup";
 import { createUnplugin } from "unplugin";
-import type { AstNode as UnionAstNode } from "./estree-transform.js";
-import { transformWithEstree } from "./estree-transform.js";
-import { CACHE_MODULE_ID, CacheStore } from "./cache-store.js";
+import type { AstNode as UnionAstNode } from "./estree-transform.ts";
+import { transformWithEstree } from "./estree-transform.ts";
+import { CACHE_MODULE_ID, CacheStore } from "./cache-store.ts";
 export interface ValibotCompilerOptions {
   exts?: string[];
 }
@@ -47,7 +47,10 @@ export const ValibotCompiler = createUnplugin(
           id: new RegExp(
             `(${exts
               .map((ext) =>
-                ext.replaceAll(/(?=(\^|\$|\\|\.|\*|\+|\(|\)|\[|\]|\{|\}|\|))/g, "\\"),
+                ext.replaceAll(
+                  /(?=(\^|\$|\\|\.|\*|\+|\(|\)|\[|\]|\{|\}|\|))/g,
+                  "\\",
+                ),
               )
               .join("|")})$`,
           ),
